@@ -24,7 +24,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd October 7, 2023
+.Dd November 4, 2024
 .Dt FETCH 3
 .Os
 .Sh NAME
@@ -420,6 +420,10 @@ to point to a directory containing hashes of trusted CAs (see
 A certificate revocation list (CRL) can be used by setting the
 environment variable
 .Ev SSL_CRL_FILE
+to the respective file containing the CRL,
+or by setting the environment variable
+.Ev SSL_CRL_VERIFY
+to look for the CRL in the configured trust store file or path
 (see
 .Xr crl 1 ) .
 .Pp
