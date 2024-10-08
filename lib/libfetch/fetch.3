@@ -426,6 +426,11 @@ or by setting the environment variable
 to look for the CRL in the configured trust store file or path
 (see
 .Xr crl 1 ) .
+CRL presence can be made optional by setting the environment
+variable
+.Ev SSL_CRL_OPTIONAL
+and a message will be printed for an absent CRL without causing
+a verification failure.
 .Pp
 Peer verification can be disabled by setting the environment variable
 .Ev SSL_NO_VERIFY_PEER .
