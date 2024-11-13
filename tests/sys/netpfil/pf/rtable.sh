@@ -66,6 +66,8 @@ forward_v4_body()
 		"pass in  on ${epair_tester}b inet proto icmp all icmp-type echoreq rtable 1"
 	jexec router route add -fib 1 -net ${net_tester} -iface ${epair_tester}b
 	ping_server_check_reply exit:0
+
+	jexec server pkill nc
 }
 
 forward_v4_cleanup()
@@ -116,6 +118,8 @@ forward_v6_body()
 		"pass in  on ${epair_tester}b inet6 proto icmp6 icmp6-type echoreq rtable 1"
 	jexec router route add -fib 1 -6 ${net_tester} -iface ${epair_tester}b
 	ping_server_check_reply exit:0
+
+	jexec server pkill nc
 }
 
 forward_v6_cleanup()

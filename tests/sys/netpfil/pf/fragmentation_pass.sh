@@ -364,6 +364,8 @@ no_df_body()
 	# pf will strip the DF flag resulting in fragmentation and packets
 	# getting properly forwarded.
 	ping_server_check_reply exit:0 --ping-type=icmp --send-length=2000 --send-flags DF
+
+	jexec server pkill nc
 }
 
 no_df_cleanup()
@@ -407,6 +409,8 @@ reassemble_slowpath_body()
 	# Ensure that the packet makes it through the slow path
 	atf_check -s exit:0 -o ignore \
 	    ping -c 1 -s 2000 198.51.100.2
+
+	jexec server pkill nc
 }
 
 reassemble_slowpath_cleanup()
