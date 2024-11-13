@@ -206,7 +206,7 @@ setup_router_server_ipv4()
 	vnet_mkjail server ${epair_server}b
 	jexec server ifconfig ${epair_server}b ${net_server_host_server}/${net_server_mask} up
 	jexec server route add -net ${net_tester} ${net_server_host_router}
-	jexec server nc -4l 666 &
+	jexec server daemon -f nc -4l 666
 	sleep 1 # Give nc time to start and listen
 }
 
@@ -259,7 +259,7 @@ setup_router_server_ipv6()
 	vnet_mkjail server ${epair_server}b
 	jexec server ifconfig ${epair_server}b inet6 ${net_server_host_server}/${net_server_mask} up no_dad
 	jexec server route add -6 ${net_tester} ${net_server_host_router}
-	jexec server nc -6l 666 &
+	jexec server daemon -f nc -6l 666
 	sleep 1 # Give nc time to start and listen
 }
 

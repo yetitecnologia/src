@@ -416,7 +416,7 @@ match_body()
 		"nat on ${epair_two}a from 192.0.2.0/24 -> (${epair_two}a)" \
 		"pass all"
 
-	nc 198.51.100.2 7 &
+	daemon -f nc 198.51.100.2 7
 	wait_for_state alcatraz 192.0.2.1
 
 	# Expect two states
@@ -437,7 +437,7 @@ match_body()
 	# Flush
 	jexec alcatraz pfctl -F states
 
-	nc 198.51.100.2 7 &
+	daemon -f nc 198.51.100.2 7
 	wait_for_state alcatraz 192.0.2.1
 
 	# Kill matching states, expect all of them to be gone
