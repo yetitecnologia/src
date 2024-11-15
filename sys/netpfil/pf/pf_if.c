@@ -429,7 +429,7 @@ pfi_kkif_match(struct pfi_kkif *rule_kif, struct pfi_kkif *packet_kif)
 	if (rule_kif == NULL || rule_kif == packet_kif)
 		return (1);
 
-	if (rule_kif->pfik_group != NULL) {
+	if (rule_kif->pfik_group != NULL && packet_kif->pfik_ifp != NULL) {
 		CK_STAILQ_FOREACH(p, &packet_kif->pfik_ifp->if_groups, ifgl_next)
 			if (p->ifgl_group == rule_kif->pfik_group)
 				return (1);
