@@ -1,3 +1,29 @@
+#
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# Copyright (c) 2024 Deciso B.V.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+
 . $(atf_get_srcdir)/utils.subr
 
 common_dir=$(atf_get_srcdir)/../common
@@ -62,7 +88,107 @@ max_cleanup()
 	pft_cleanup
 }
 
+atf_test_case "any" "cleanup"
+any_head()
+{
+	atf_set descr 'Test the pflog output on 0.0.0.0'
+	atf_set require.user root
+}
+
+any_body()
+{
+	pflog_init
+
+	epair=$(vnet_mkepair)
+
+	vnet_mkjail alcatraz ${epair}a
+	jexec alcatraz ifconfig ${epair}a 192.0.2.1/24 up
+	jexec alcatraz ifconfig ${epair}a alias 192.0.2.3/24
+
+	ifconfig ${epair}b 192.0.2.2/24 up
+
+	# Sanity check
+	atf_check -s exit:0 -o ignore \
+	    ping -c 1 192.0.2.1
+
+	jexec alcatraz pfctl -e
+	jexec alcatraz ifconfig pflog0 up
+	pft_set_rules alcatraz "pass log inet keep state"
+
+	jexec alcatraz tcpdump -n -e -ttt --immediate-mode -l -U -i pflog0 >> ${PWD}/pflog.txt &
+	sleep 1 # Wait for tcpdump to start
+
+	atf_check -s exit:0 -o match:"Sent 1" ./scapy_sendp.py \
+		--gateway 192.0.2.1 --dst 192.0.2.1 --dport 9999
+
+	atf_check -s exit:0 -o match:"Sent 1" ./scapy_sendp.py \
+		--gateway 192.0.2.1 --dst 0.0.0.0 --dport 9999
+
+	atf_check -s exit:0 -o match:"Sent 1" ./scapy_sendp.py \
+		--gateway 192.0.2.1 --dst 0.0.0.1 --dport 9999
+
+	echo "Rules"
+	jexec alcatraz pfctl -sr -vv
+	echo "States"
+	jexec alcatraz pfctl -ss -vv
+	echo "Log"
+	cat ${PWD}/pflog.txt
+
+	atf_check -o match:".*rule 0/0\(match\): pass in on epair0a: 192.0.2.2.1234 > 192.0.2.1.9999: UDP.*" \
+	    cat pflog.txt
+
+	atf_check -o match:".*rule 0/0\(match\): pass in on epair0a: 192.0.2.2.1234 > 0.0.0.1.9999: UDP.*" \
+	    cat pflog.txt
+
+	atf_check -o match:".*rule 0/0\(match\): pass in on epair0a: 192.0.2.2.1234 > 0.0.0.0.9999: UDP.*" \
+	    cat pflog.txt
+
+	atf_check -o match:3 grep -c . pflog.txt
+}
+
+any_cleanup()
+{
+	pft_cleanup
+}
+
 atf_init_test_cases()
 {
 	atf_add_test_case "max"
+	atf_add_test_case "any"
+
+	cat > scapy_sendp.py << EOF
+#!/usr/bin/env python3
+
+import argparse
+from scapy.all import *
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--proto', help='protocol to use', default='udp', choices=['tcp', 'udp'])
+    parser.add_argument('--dst', help='destination address', required=True)
+    parser.add_argument('--gateway', help='next hop to use, determines src/dst mac', required=True)
+    parser.add_argument('--sport', help='source port', default=1234)
+    parser.add_argument('--dport', help='destination port', required=True, type=int)
+    args = parser.parse_args()
+
+    this_route = conf.route.route(args.gateway)
+    if this_route:
+        src_mac = get_if_hwaddr(this_route[0])
+        packet = Ether(src=src_mac, dst=getmacbyip(args.gateway))
+        if args.dst.find(':') > 0:
+            packet  = packet / IPv6(dst=args.dst, src=this_route[1])
+        else:
+            packet  = packet / IP(dst=args.dst, src=this_route[1])
+
+        if args.proto == 'udp':
+            packet = packet / UDP(sport=args.sport, dport=args.dport)
+        else:
+            packet = packet / TCP(sport=args.sport, dport=args.dport)
+
+        sendp(packet, this_route[0])
+
+if __name__ == '__main__':
+    main()
+EOF
+	chmod 555 scapy_sendp.py
 }
