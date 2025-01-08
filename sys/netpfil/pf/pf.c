@@ -132,6 +132,13 @@ SDT_PROBE_DEFINE2(pf, sctp, multihome, add, "uint32_t",
     "struct pf_sctp_source *");
 SDT_PROBE_DEFINE3(pf, sctp, multihome, remove, "uint32_t",
     "struct pf_kstate *", "struct pf_sctp_source *");
+SDT_PROBE_DEFINE4(pf, sctp, multihome_scan, entry, "int",
+    "int", "struct pf_pdesc *", "int");
+SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, param, "uint16_t", "uint16_t");
+SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, ipv4, "struct in_addr *",
+    "int");
+SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, ipv6, "struct in_addr6 *",
+    "int");
 
 SDT_PROBE_DEFINE3(pf, eth, test_rule, entry, "int", "struct ifnet *",
     "struct mbuf *");
@@ -6579,6 +6586,8 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 	int			 off = 0;
 	struct pf_sctp_multihome_job	*job;
 
+	SDT_PROBE4(pf, sctp, multihome_scan, entry, start, len, pd, op);
+
 	while (off < len) {
 		struct sctp_paramhdr h;
 
@@ -6589,6 +6598,9 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 		/* Parameters are at least 4 bytes. */
 		if (ntohs(h.param_length) < 4)
 			return (PF_DROP);
+
+		SDT_PROBE2(pf, sctp, multihome_scan, param, ntohs(h.param_type),
+		    ntohs(h.param_length));
 
 		switch (ntohs(h.param_type)) {
 		case  SCTP_IPV4_ADDRESS: {
@@ -6618,6 +6630,8 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 			job = malloc(sizeof(*job), M_PFTEMP, M_NOWAIT | M_ZERO);
 			if (! job)
 				return (PF_DROP);
+
+			SDT_PROBE2(pf, sctp, multihome_scan, ipv4, &t, op);
 
 			memcpy(&job->pd, pd, sizeof(*pd));
 
@@ -6651,6 +6665,8 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 			job = malloc(sizeof(*job), M_PFTEMP, M_NOWAIT | M_ZERO);
 			if (! job)
 				return (PF_DROP);
+
+			SDT_PROBE2(pf, sctp, multihome_scan, ipv6, &t, op);
 
 			memcpy(&job->pd, pd, sizeof(*pd));
 			memcpy(&job->src, &t, sizeof(t));
@@ -6702,6 +6718,7 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 
 	return (PF_PASS);
 }
+
 int
 pf_multihome_scan_init(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
     struct pfi_kkif *kif)
