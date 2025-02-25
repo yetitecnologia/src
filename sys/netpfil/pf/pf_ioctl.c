@@ -5009,10 +5009,10 @@ DIOCCHANGEADDR_error:
 		totlen = io->pfrio_size * sizeof(struct pfr_addr);
 		pfras = mallocarray(io->pfrio_size, sizeof(struct pfr_addr),
 		    M_TEMP, M_WAITOK | M_ZERO);
-		PF_RULES_RLOCK();
+		PF_RULES_WLOCK();
 		error = pfr_get_addrs(&io->pfrio_table, pfras,
 		    &io->pfrio_size, io->pfrio_flags | PFR_FLAG_USERIOCTL);
-		PF_RULES_RUNLOCK();
+		PF_RULES_WUNLOCK();
 		if (error == 0)
 			error = copyout(pfras, io->pfrio_buffer, totlen);
 		free(pfras, M_TEMP);
@@ -5104,11 +5104,11 @@ DIOCCHANGEADDR_error:
 			free(pfras, M_TEMP);
 			break;
 		}
-		PF_RULES_RLOCK();
+		PF_RULES_WLOCK();
 		error = pfr_tst_addrs(&io->pfrio_table, pfras,
 		    io->pfrio_size, &io->pfrio_nmatch, io->pfrio_flags |
 		    PFR_FLAG_USERIOCTL);
-		PF_RULES_RUNLOCK();
+		PF_RULES_WUNLOCK();
 		if (error == 0)
 			error = copyout(pfras, io->pfrio_buffer, totlen);
 		free(pfras, M_TEMP);

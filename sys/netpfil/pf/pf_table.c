@@ -154,7 +154,7 @@ static int		 pfr_route_kentry(struct pfr_ktable *,
 			    struct pfr_kentry *);
 static int		 pfr_unroute_kentry(struct pfr_ktable *,
 			    struct pfr_kentry *);
-static int		 pfr_walktree(struct radix_node *, void *);
+int			 pfr_walktree(struct radix_node *, void *);
 static int		 pfr_validate_table(struct pfr_table *, int, int);
 static int		 pfr_fix_anchor(char *);
 static void		 pfr_commit_ktable(struct pfr_ktable *, long);
@@ -514,7 +514,7 @@ pfr_tst_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int size,
 	struct pfr_addr		*ad;
 	int			 i, xmatch = 0;
 
-	PF_RULES_RASSERT();
+	PF_RULES_WASSERT();
 
 	ACCEPT_FLAGS(flags, PFR_FLAG_REPLACE);
 	if (pfr_validate_table(tbl, 0, 0))
@@ -549,7 +549,7 @@ pfr_get_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int *size,
 	struct pfr_walktree	 w;
 	int			 rv;
 
-	PF_RULES_RASSERT();
+	PF_RULES_WASSERT();
 
 	ACCEPT_FLAGS(flags, 0);
 	if (pfr_validate_table(tbl, 0, 0))
@@ -755,7 +755,7 @@ pfr_lookup_addr(struct pfr_ktable *kt, struct pfr_addr *ad, int exact)
 	struct radix_head	*head = NULL;
 	struct pfr_kentry	*ke;
 
-	PF_RULES_ASSERT();
+	PF_RULES_WASSERT();
 
 	bzero(&sa, sizeof(sa));
 	if (ad->pfra_af == AF_INET) {
@@ -855,6 +855,8 @@ pfr_insert_kentry(struct pfr_ktable *kt, struct pfr_addr *ad, long tzero)
 {
 	struct pfr_kentry	*p;
 	int			 rv;
+
+	PF_RULES_WASSERT();
 
 	p = pfr_lookup_addr(kt, ad, 1);
 	if (p != NULL)
@@ -1044,7 +1046,7 @@ pfr_copyout_astats(struct pfr_astats *as, const struct pfr_kentry *ke,
 	}
 }
 
-static int
+int
 pfr_walktree(struct radix_node *rn, void *arg)
 {
 	struct pfr_kentry	*ke = (struct pfr_kentry *)rn;
@@ -1167,6 +1169,8 @@ pfr_add_tables(struct pfr_table *tbl, int size, int *nadd, int flags)
 	struct pfr_ktable	*p, *q, *r, key;
 	int			 i, rv, xadd = 0;
 	long			 tzero = time_second;
+
+	PF_RULES_WASSERT();
 
 	ACCEPT_FLAGS(flags, PFR_FLAG_DUMMY);
 	SLIST_INIT(&addq);
