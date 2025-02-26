@@ -53,6 +53,8 @@
 #include <net/radix.h>
 #endif /* !_KERNEL */
 
+#define RADIX_ASSERT(cond, list)	do { if (__builtin_expect(!(cond), 0)) { printf list; printf("\n"); } } while (0)
+
 static struct radix_node
 	 *rn_insert(void *, struct radix_head *, int *,
 	     struct radix_node [2]),
@@ -963,7 +965,7 @@ rn_walktree_from(struct radix_head *h, void *a, void *m,
 	int stopping = 0;
 	int lastb;
 
-	KASSERT(m != NULL, ("%s: mask needs to be specified", __func__));
+	RADIX_ASSERT((m != NULL), ("%s: mask needs to be specified", __func__));
 
 	/*
 	 * rn_search_m is sort-of-open-coded here. We cannot use the
@@ -1056,12 +1058,95 @@ rn_walktree_from(struct radix_head *h, void *a, void *m,
 	return (0);
 }
 
+struct radix_node *rn_walktree_right(struct radix_node *);
+struct radix_node *
+rn_walktree_right(struct radix_node *rn)
+{
+	RADIX_ASSERT((rn != NULL), ("%s: node is NULL", __func__));
+	RADIX_ASSERT((rn->rn_parent != NULL), ("%s: parent1 is NULL", __func__));
+
+	/* If at right child go back up, otherwise, go right */
+	while (rn->rn_parent->rn_right == rn
+	       && (rn->rn_flags & RNF_ROOT) == 0) {
+		RADIX_ASSERT((rn->rn_parent != NULL), ("%s: parent2 is NULL", __func__));
+		rn = rn->rn_parent;
+       }
+
+	return rn;
+}
+
+struct radix_node *rn_walktree_leaf(struct radix_node *);
+struct radix_node *
+rn_walktree_leaf(struct radix_node *rn)
+{
+	RADIX_ASSERT((rn != NULL), ("%s: node is NULL", __func__));
+
+	/* Find the next *leaf* since next node might vanish, too */
+	for (rn = rn->rn_parent->rn_right; rn->rn_bit >= 0;) {
+                /* XXX hard to control this one due to loop condition */
+		RADIX_ASSERT((rn->rn_left != NULL), ("%s: leaf-parent is NULL", __func__));
+		rn = rn->rn_left;
+	}
+
+        return rn;
+}
+
+int rn_walktree_proc(struct radix_node *, struct radix_node *, walktree_f_t *, void *);
+int
+rn_walktree_proc(struct radix_node *rn, struct radix_node *base, walktree_f_t *f, void *w)
+{
+	int error;
+
+	/* Process leaves */
+	while ((rn = base)) {
+		base = rn->rn_dupedkey;
+
+		if (!(rn->rn_flags & RNF_ROOT) && (error = (*f)(rn, w)))
+			return (error);
+	}
+
+	return (0);
+}
+
+int rn_walktree_do(struct radix_node *, walktree_f_t *, void *);
+int
+rn_walktree_do(struct radix_node *rn, walktree_f_t *f, void *w)
+{
+	struct radix_node *base, *next;
+	int error;
+
+	for (;;) {
+		base = rn;
+
+		RADIX_ASSERT((base != NULL), ("%s: base is NULL", __func__));
+
+		rn = rn_walktree_right(rn);
+		rn = rn_walktree_leaf(rn);
+
+		next = rn;
+
+		RADIX_ASSERT((next != NULL), ("%s: next is NULL", __func__));
+
+		if ((error = rn_walktree_proc(rn, base, f, w))) {
+			return (error);
+		}
+
+		rn = next;
+		if (rn->rn_flags & RNF_ROOT)
+			return (0);
+	}
+	/* NOTREACHED */
+}
+
 int
 rn_walktree(struct radix_head *h, walktree_f_t *f, void *w)
 {
-	int error;
-	struct radix_node *base, *next;
+	RADIX_ASSERT((h != NULL), ("%s: head is NULL", __func__));
+
 	struct radix_node *rn = h->rnh_treetop;
+
+	RADIX_ASSERT((rn != NULL), ("%s: top node is NULL", __func__));
+
 	/*
 	 * This gets complicated because we may delete the node
 	 * while applying the function f to it, so we need to calculate
@@ -1069,30 +1154,12 @@ rn_walktree(struct radix_head *h, walktree_f_t *f, void *w)
 	 */
 
 	/* First time through node, go left */
-	while (rn->rn_bit >= 0)
+	while (rn->rn_bit >= 0) {
+		RADIX_ASSERT((rn->rn_left != NULL), ("%s: left node is NULL", __func__));
 		rn = rn->rn_left;
-	for (;;) {
-		base = rn;
-		/* If at right child go back up, otherwise, go right */
-		while (rn->rn_parent->rn_right == rn
-		       && (rn->rn_flags & RNF_ROOT) == 0)
-			rn = rn->rn_parent;
-		/* Find the next *leaf* since next node might vanish, too */
-		for (rn = rn->rn_parent->rn_right; rn->rn_bit >= 0;)
-			rn = rn->rn_left;
-		next = rn;
-		/* Process leaves */
-		while ((rn = base)) {
-			base = rn->rn_dupedkey;
-			if (!(rn->rn_flags & RNF_ROOT)
-			    && (error = (*f)(rn, w)))
-				return (error);
-		}
-		rn = next;
-		if (rn->rn_flags & RNF_ROOT)
-			return (0);
 	}
-	/* NOTREACHED */
+
+	return rn_walktree_do(rn, f, w);
 }
 
 /*
@@ -1124,7 +1191,7 @@ static void
 rn_detachhead_internal(struct radix_head *head)
 {
 
-	KASSERT((head != NULL),
+	RADIX_ASSERT((head != NULL),
 	    ("%s: head already freed", __func__));
 
 	/* Free <left,root,right> nodes. */
@@ -1189,7 +1256,7 @@ rn_detachhead(void **head)
 {
 	struct radix_node_head *rnh;
 
-	KASSERT((head != NULL && *head != NULL),
+	RADIX_ASSERT((head != NULL && *head != NULL),
 	    ("%s: head already freed", __func__));
 
 	rnh = (struct radix_node_head *)(*head);
