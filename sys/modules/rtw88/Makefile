@@ -4,7 +4,6 @@ DEVRTW88DIR=	${SRCTOP}/sys/contrib/dev/rtw88
 .PATH: ${DEVRTW88DIR}
 
 WITH_CONFIG_PM=	0
-WITH_DEBUGFS=	1
 
 KMOD=	if_rtw88
 
@@ -21,8 +20,6 @@ CFLAGS+=	-DCONFIG_PM=${WITH_CONFIG_PM}
 
 # PCI parts.
 SRCS+=	pci.c
-SRCS+=	rtw8723x.c					# 87x3 common
-SRCS+=	rtw8703b.c rtw8703b_tables.c			# 11n
 SRCS+=	rtw8723d.c rtw8723d_table.c rtw8723de.c		# 11n
 SRCS+=	rtw8821c.c rtw8821c_table.c rtw8821ce.c		# 11ac
 SRCS+=	rtw8822b.c rtw8822b_table.c rtw8822be.c		# 11ac
@@ -41,8 +38,6 @@ CFLAGS+=	-DLINUXKPI_VERSION=60800
 CFLAGS+=	-I${DEVRTW88DIR}
 CFLAGS+=	${LINUXKPI_INCLUDES}
 CFLAGS+=	-DCONFIG_RTW88_DEBUG
-.if defined(WITH_DEBUGFS) && ${WITH_DEBUGFS} > 0
-CFLAGS+=	-DCONFIG_RTW88_DEBUGFS
-.endif
+#CFLAGS+=	-DCONFIG_RTW88_DEBUGFS
 
 .include <bsd.kmod.mk>

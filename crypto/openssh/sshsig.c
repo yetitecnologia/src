@@ -874,7 +874,6 @@ cert_filter_principals(const char *path, u_long linenum,
 	}
 	if ((principals = sshbuf_dup_string(nprincipals)) == NULL) {
 		error_f("buffer error");
-		r = SSH_ERR_ALLOC_FAIL;
 		goto out;
 	}
 	/* success */

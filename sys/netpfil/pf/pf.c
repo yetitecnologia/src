@@ -132,13 +132,6 @@ SDT_PROBE_DEFINE2(pf, sctp, multihome, add, "uint32_t",
     "struct pf_sctp_source *");
 SDT_PROBE_DEFINE3(pf, sctp, multihome, remove, "uint32_t",
     "struct pf_kstate *", "struct pf_sctp_source *");
-SDT_PROBE_DEFINE4(pf, sctp, multihome_scan, entry, "int",
-    "int", "struct pf_pdesc *", "int");
-SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, param, "uint16_t", "uint16_t");
-SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, ipv4, "struct in_addr *",
-    "int");
-SDT_PROBE_DEFINE2(pf, sctp, multihome_scan, ipv6, "struct in_addr6 *",
-    "int");
 
 SDT_PROBE_DEFINE3(pf, eth, test_rule, entry, "int", "struct ifnet *",
     "struct mbuf *");
@@ -303,7 +296,7 @@ static void		 pf_change_ap(struct mbuf *, struct pf_addr *, u_int16_t *,
 static int		 pf_modulate_sack(struct mbuf *, int, struct pf_pdesc *,
 			    struct tcphdr *, struct pf_state_peer *);
 int			 pf_icmp_mapping(struct pf_pdesc *, u_int8_t, int *,
-			    u_int16_t *, u_int16_t *);
+			    int *, u_int16_t *, u_int16_t *);
 static void		 pf_change_icmp(struct pf_addr *, u_int16_t *,
 			    struct pf_addr *, struct pf_addr *, u_int16_t,
 			    u_int16_t *, u_int16_t *, u_int16_t *,
@@ -409,6 +402,8 @@ extern struct proc *pf_purge_proc;
 
 VNET_DEFINE(struct pf_limit, pf_limits[PF_LIMIT_MAX]);
 
+enum { PF_ICMP_MULTI_NONE, PF_ICMP_MULTI_LINK };
+
 #define	PACKET_UNDO_NAT(_m, _pd, _off, _s)		\
 	do {								\
 		struct pf_state_key *nk;				\
@@ -432,23 +427,8 @@ VNET_DEFINE(struct pf_limit, pf_limits[PF_LIMIT_MAX]);
 			return (PF_PASS);				\
 	} while (0)
 
-static struct pfi_kkif *
-BOUND_IFACE(struct pf_krule *rule, struct pfi_kkif *k, struct pf_pdesc *pd)
-{
-	/* Floating unless otherwise specified. */
-	if (! (rule->rule_flag & PFRULE_IFBOUND))
-		return (V_pfi_all);
-
-	/*
-	 * If this state is created based on another state (e.g. SCTP
-	 * multihome) always set it floating initially. We can't know for sure
-	 * what interface the actual traffic for this state will come in on.
-	 */
-	if (pd->related_rule)
-		return (V_pfi_all);
-
-	return (k);
-}
+#define	BOUND_IFACE(r, k) \
+	((r)->rule_flag & PFRULE_IFBOUND) ? (k) : V_pfi_all
 
 #define	STATE_INC_COUNTERS(s)						\
 	do {								\
@@ -1545,7 +1525,7 @@ pf_state_key_addr_setup(struct pf_pdesc *pd, struct mbuf *m, int off,
 		}
 		break;
 	default:
-		if (multi) {
+		if (multi == PF_ICMP_MULTI_LINK) {
 			key->addr[sidx].addr32[0] = IPV6_ADDR_INT32_MLL;
 			key->addr[sidx].addr32[1] = 0;
 			key->addr[sidx].addr32[2] = 0;
@@ -1857,7 +1837,7 @@ pf_isforlocal(struct mbuf *m, int af)
 
 int
 pf_icmp_mapping(struct pf_pdesc *pd, u_int8_t type,
-    int *icmp_dir, u_int16_t *virtual_id, u_int16_t *virtual_type)
+    int *icmp_dir, int *multi, u_int16_t *virtual_id, u_int16_t *virtual_type)
 {
 	/*
 	 * ICMP types marked with PF_OUT are typically responses to
@@ -1865,7 +1845,7 @@ pf_icmp_mapping(struct pf_pdesc *pd, u_int8_t type,
 	 * PF_IN ICMP types need to match a state with that type.
 	 */
 	*icmp_dir = PF_OUT;
-
+	*multi = PF_ICMP_MULTI_LINK;
 	/* Queries (and responses) */
 	switch (pd->af) {
 #ifdef INET
@@ -1957,9 +1937,6 @@ pf_icmp_mapping(struct pf_pdesc *pd, u_int8_t type,
 
 		case MLD_LISTENER_QUERY:
 		case MLD_LISTENER_REPORT: {
-			struct mld_hdr *mld = &pd->hdr.mld;
-			u_int32_t h;
-
 			/*
 			 * Listener Report can be sent by clients
 			 * without an associated Listener Query.
@@ -1969,12 +1946,7 @@ pf_icmp_mapping(struct pf_pdesc *pd, u_int8_t type,
 			 */
 			*icmp_dir = PF_IN;
 			*virtual_type = MLD_LISTENER_QUERY;
-			/* generate fake id for these messages */
-			h = mld->mld_addr.s6_addr32[0] ^
-			    mld->mld_addr.s6_addr32[1] ^
-			    mld->mld_addr.s6_addr32[2] ^
-			    mld->mld_addr.s6_addr32[3];
-			*virtual_id = (h >> 16) ^ (h & 0xffff);
+			*virtual_id = 0;
 			break;
 		}
 		case MLD_MTRACE:
@@ -1986,30 +1958,9 @@ pf_icmp_mapping(struct pf_pdesc *pd, u_int8_t type,
 
 		case ND_NEIGHBOR_SOLICIT:
 			*icmp_dir = PF_IN;
-			/* FALLTHROUGH */
 		case ND_NEIGHBOR_ADVERT: {
-			struct nd_neighbor_solicit *nd = &pd->hdr.nd_ns;
-			u_int32_t h;
-
 			*virtual_type = ND_NEIGHBOR_SOLICIT;
-			/* generate fake id for these messages */
-			h = nd->nd_ns_target.s6_addr32[0] ^
-			    nd->nd_ns_target.s6_addr32[1] ^
-			    nd->nd_ns_target.s6_addr32[2] ^
-			    nd->nd_ns_target.s6_addr32[3];
-			*virtual_id = (h >> 16) ^ (h & 0xffff);
-			/*
-			 * the extra work here deals with 'keep state' option
-			 * at pass rule  for unsolicited advertisement.  By
-			 * returning 1 (state_icmp = 1) we override 'keep
-			 * state' to 'no state' so we don't create state for
-			 * unsolicited advertisements. No one expects answer to
-			 * unsolicited advertisements so we should be good.
-			 */
-			if (type == ND_NEIGHBOR_ADVERT) {
-				*virtual_type = htons(*virtual_type);
-				return (1);
-			}
+			*virtual_id = 0;
 			break;
 		}
 
@@ -4463,6 +4414,11 @@ pf_test_eth_rule(int dir, struct pfi_kkif *kif, struct mbuf **m0)
 		return (PF_PASS);
 	}
 
+	ruleset = V_pf_keth;
+	rules = ck_pr_load_ptr(&ruleset->active.rules);
+	r = TAILQ_FIRST(rules);
+	rm = NULL;
+
 	e = mtod(m, struct ether_header *);
 	proto = ntohs(e->ether_type);
 
@@ -4499,9 +4455,7 @@ pf_test_eth_rule(int dir, struct pfi_kkif *kif, struct mbuf **m0)
 
 	PF_RULES_RLOCK();
 
-	ruleset = V_pf_keth;
-	rules = atomic_load_ptr(&ruleset->active.rules);
-	for (r = TAILQ_FIRST(rules), rm = NULL; r != NULL;) {
+	while (r != NULL) {
 		counter_u64_add(r->evaluations, 1);
 		SDT_PROBE2(pf, eth, test_rule, test, r->nr, r);
 
@@ -4710,7 +4664,7 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, struct pfi_kkif *kif,
 	int			 tag = -1;
 	int			 asd = 0;
 	int			 match = 0;
-	int			 state_icmp = 0, icmp_dir;
+	int			 state_icmp = 0, icmp_dir, multi;
 	u_int16_t		 sport = 0, dport = 0, virtual_type, virtual_id;
 	u_int16_t		 bproto_sum = 0, bip_sum = 0;
 	u_int8_t		 icmptype = 0, icmpcode = 0;
@@ -4751,7 +4705,7 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, struct pfi_kkif *kif,
 		icmptype = pd->hdr.icmp.icmp_type;
 		icmpcode = pd->hdr.icmp.icmp_code;
 		state_icmp = pf_icmp_mapping(pd, icmptype,
-		    &icmp_dir, &virtual_id, &virtual_type);
+		    &icmp_dir, &multi, &virtual_id, &virtual_type);
 		if (icmp_dir == PF_IN) {
 			sport = virtual_id;
 			dport = virtual_type;
@@ -4769,7 +4723,7 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, struct pfi_kkif *kif,
 		icmptype = pd->hdr.icmp6.icmp6_type;
 		icmpcode = pd->hdr.icmp6.icmp6_code;
 		state_icmp = pf_icmp_mapping(pd, icmptype,
-		    &icmp_dir, &virtual_id, &virtual_type);
+		    &icmp_dir, &multi, &virtual_id, &virtual_type);
 		if (icmp_dir == PF_IN) {
 			sport = virtual_id;
 			dport = virtual_type;
@@ -4948,10 +4902,6 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, struct pfi_kkif *kif,
 	}
 
 	while (r != NULL) {
-		if (pd->related_rule) {
-			*rm = pd->related_rule;
-			break;
-		}
 		pf_counter_u64_add(&r->evaluations, 1);
 		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
@@ -4980,13 +4930,6 @@ pf_test_rule(struct pf_krule **rm, struct pf_kstate **sm, struct pfi_kkif *kif,
 			r = TAILQ_NEXT(r, entries);
 		/* icmp only. type always 0 in other cases */
 		else if (r->code && r->code != icmpcode + 1)
-			r = TAILQ_NEXT(r, entries);
-		 /* icmpv6 only. don't create states on replies */
-		else if (pd->proto == IPPROTO_ICMPV6 &&
-			    r->keep_state && !state_icmp &&
-			    (r->rule_flag & PFRULE_STATESLOPPY) == 0 &&
-			    icmp_dir != PF_IN &&
-			    icmptype != ND_NEIGHBOR_ADVERT)
 			r = TAILQ_NEXT(r, entries);
 		else if (r->tos && !(r->tos == pd->tos))
 			r = TAILQ_NEXT(r, entries);
@@ -5322,7 +5265,7 @@ pf_create_state(struct pf_krule *r, struct pf_krule *nr, struct pf_krule *a,
 		    __func__, nr, sk, nk));
 
 	/* Swap sk/nk for PF_OUT. */
-	if (pf_state_insert(BOUND_IFACE(r, kif, pd), kif,
+	if (pf_state_insert(BOUND_IFACE(r, kif), kif,
 	    (pd->dir == PF_IN) ? sk : nk,
 	    (pd->dir == PF_IN) ? nk : sk, s)) {
 		REASON_SET(&reason, PFRES_STATEINS);
@@ -6265,13 +6208,6 @@ pf_test_state_sctp(struct pf_kstate **state, struct pfi_kkif *kif,
 		return (PF_DROP);
 	}
 
-	if (src->scrub != NULL) {
-		if (src->scrub->pfss_v_tag == 0) {
-			src->scrub->pfss_v_tag = pd->hdr.sctp.v_tag;
-		} else  if (src->scrub->pfss_v_tag != pd->hdr.sctp.v_tag)
-			return (PF_DROP);
-	}
-
 	/* Track state. */
 	if (pd->sctp_flags & PFDESC_SCTP_INIT) {
 		if (src->state < SCTP_COOKIE_WAIT) {
@@ -6284,15 +6220,6 @@ pf_test_state_sctp(struct pf_kstate **state, struct pfi_kkif *kif,
 		if (dst->scrub->pfss_v_tag == 0)
 			dst->scrub->pfss_v_tag = pd->sctp_initiate_tag;
 	}
-
-	/*
-	 * Bind to the correct interface if we're if-bound. For multihomed
-	 * extra associations we don't know which interface that will be until
-	 * here, so we've inserted the state on V_pf_all. Fix that now.
-	 */
-	if ((*state)->kif == V_pfi_all &&
-	    (*state)->rule.ptr->rule_flag & PFRULE_IFBOUND)
-		(*state)->kif = kif;
 
 	if (pd->sctp_flags & (PFDESC_SCTP_COOKIE | PFDESC_SCTP_HEARTBEAT_ACK)) {
 		if (src->state < SCTP_ESTABLISHED) {
@@ -6310,6 +6237,13 @@ pf_test_state_sctp(struct pf_kstate **state, struct pfi_kkif *kif,
 	if (pd->sctp_flags & (PFDESC_SCTP_SHUTDOWN_COMPLETE)) {
 		pf_set_protostate(*state, psrc, SCTP_CLOSED);
 		(*state)->timeout = PFTM_SCTP_CLOSED;
+	}
+
+	if (src->scrub != NULL) {
+		if (src->scrub->pfss_v_tag == 0) {
+			src->scrub->pfss_v_tag = pd->hdr.sctp.v_tag;
+		} else  if (src->scrub->pfss_v_tag != pd->hdr.sctp.v_tag)
+			return (PF_DROP);
 	}
 
 	(*state)->expire = time_uptime;
@@ -6490,9 +6424,6 @@ again:
 			j->pd.sctp_flags |= PFDESC_SCTP_ADD_IP;
 			PF_RULES_RLOCK();
 			sm = NULL;
-			if (s->rule.ptr->rule_flag & PFRULE_ALLOW_RELATED) {
-				j->pd.related_rule = s->rule.ptr;
-			}
 			ret = pf_test_rule(&r, &sm, kif,
 			    j->m, off, &j->pd, &ra, &rs, NULL);
 			PF_RULES_RUNLOCK();
@@ -6617,8 +6548,6 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 	int			 off = 0;
 	struct pf_sctp_multihome_job	*job;
 
-	SDT_PROBE4(pf, sctp, multihome_scan, entry, start, len, pd, op);
-
 	while (off < len) {
 		struct sctp_paramhdr h;
 
@@ -6629,9 +6558,6 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 		/* Parameters are at least 4 bytes. */
 		if (ntohs(h.param_length) < 4)
 			return (PF_DROP);
-
-		SDT_PROBE2(pf, sctp, multihome_scan, param, ntohs(h.param_type),
-		    ntohs(h.param_length));
 
 		switch (ntohs(h.param_type)) {
 		case  SCTP_IPV4_ADDRESS: {
@@ -6661,8 +6587,6 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 			job = malloc(sizeof(*job), M_PFTEMP, M_NOWAIT | M_ZERO);
 			if (! job)
 				return (PF_DROP);
-
-			SDT_PROBE2(pf, sctp, multihome_scan, ipv4, &t, op);
 
 			memcpy(&job->pd, pd, sizeof(*pd));
 
@@ -6696,8 +6620,6 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 			job = malloc(sizeof(*job), M_PFTEMP, M_NOWAIT | M_ZERO);
 			if (! job)
 				return (PF_DROP);
-
-			SDT_PROBE2(pf, sctp, multihome_scan, ipv6, &t, op);
 
 			memcpy(&job->pd, pd, sizeof(*pd));
 			memcpy(&job->src, &t, sizeof(t));
@@ -6749,7 +6671,6 @@ pf_multihome_scan(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
 
 	return (PF_PASS);
 }
-
 int
 pf_multihome_scan_init(struct mbuf *m, int start, int len, struct pf_pdesc *pd,
     struct pfi_kkif *kif)
@@ -6821,7 +6742,7 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 	struct pf_addr  *saddr = pd->src, *daddr = pd->dst;
 	u_int16_t	*icmpsum, virtual_id, virtual_type;
 	u_int8_t	 icmptype, icmpcode;
-	int		 icmp_dir, iidx, ret;
+	int		 icmp_dir, iidx, ret, multi;
 	struct pf_state_key_cmp key;
 #ifdef INET
 	u_int16_t	 icmpid;
@@ -6851,22 +6772,22 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 #endif /* INET6 */
 	}
 
-	if (pf_icmp_mapping(pd, icmptype, &icmp_dir, &virtual_id,
-	    &virtual_type) == 0) {
+	if (pf_icmp_mapping(pd, icmptype, &icmp_dir, &multi,
+	    &virtual_id, &virtual_type) == 0) {
 		/*
-		 * ICMP query/reply message not related to a TCP/UDP/SCTP
-		 * packet. Search for an ICMP state.
+		 * ICMP query/reply message not related to a TCP/UDP packet.
+		 * Search for an ICMP state.
 		 */
 		ret = pf_icmp_state_lookup(&key, pd, state, m, off, pd->dir,
 		    kif, virtual_id, virtual_type, icmp_dir, &iidx,
-		    0, 0);
+		    PF_ICMP_MULTI_NONE, 0);
 		if (ret >= 0) {
 			MPASS(*state == NULL);
 			if (ret == PF_DROP && pd->af == AF_INET6 &&
 			    icmp_dir == PF_OUT) {
 				ret = pf_icmp_state_lookup(&key, pd, state, m, off,
 				    pd->dir, kif, virtual_id, virtual_type,
-				    icmp_dir, &iidx, 1, 0);
+				    icmp_dir, &iidx, multi, 0);
 				if (ret >= 0) {
 					MPASS(*state == NULL);
 					return (ret);
@@ -7259,93 +7180,6 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 			break;
 		}
 #ifdef INET
-		case IPPROTO_SCTP: {
-			struct sctphdr		sh;
-			struct pf_state_peer	*src;
-			int			 copyback = 0;
-
-			if (! pf_pull_hdr(m, off2, &sh, sizeof(sh), NULL, reason,
-			    pd2.af)) {
-				DPFPRINTF(PF_DEBUG_MISC,
-				    ("pf: ICMP error message too short "
-				    "(sctp)\n"));
-				return (PF_DROP);
-			}
-
-			key.af = pd2.af;
-			key.proto = IPPROTO_SCTP;
-			PF_ACPY(&key.addr[pd2.sidx], pd2.src, key.af);
-			PF_ACPY(&key.addr[pd2.didx], pd2.dst, key.af);
-			key.port[pd2.sidx] = sh.src_port;
-			key.port[pd2.didx] = sh.dest_port;
-
-			STATE_LOOKUP(kif, &key, *state, pd);
-
-			if (pd->dir == (*state)->direction) {
-				src = &(*state)->dst;
-			} else {
-				src = &(*state)->src;
-			}
-
-			if (src->scrub->pfss_v_tag != sh.v_tag) {
-				DPFPRINTF(PF_DEBUG_MISC,
-				    ("pf: ICMP error message has incorrect "
-				    "SCTP v_tag\n"));
-				return (PF_DROP);
-			}
-
-			/* translate source/destination address, if necessary */
-			if ((*state)->key[PF_SK_WIRE] !=
-			    (*state)->key[PF_SK_STACK]) {
-				struct pf_state_key *nk =
-				    (*state)->key[pd->didx];
-
-				if (PF_ANEQ(pd2.src,
-				    &nk->addr[pd2.sidx], pd2.af) ||
-				    nk->port[pd2.sidx] != sh.src_port)
-					pf_change_icmp(pd2.src, &sh.src_port,
-					    daddr, &nk->addr[pd2.sidx],
-					    nk->port[pd2.sidx], NULL,
-					    pd2.ip_sum, icmpsum,
-					    pd->ip_sum, 0, pd2.af);
-
-				if (PF_ANEQ(pd2.dst,
-				    &nk->addr[pd2.didx], pd2.af) ||
-				    nk->port[pd2.didx] != sh.dest_port)
-					pf_change_icmp(pd2.dst, &sh.dest_port,
-					    saddr, &nk->addr[pd2.didx],
-					    nk->port[pd2.didx], NULL,
-					    pd2.ip_sum, icmpsum,
-					    pd->ip_sum, 0, pd2.af);
-				copyback = 1;
-			}
-
-			if (copyback) {
-				switch (pd2.af) {
-#ifdef INET
-				case AF_INET:
-					m_copyback(m, off, ICMP_MINLEN,
-					    (caddr_t )&pd->hdr.icmp);
-					m_copyback(m, ipoff2, sizeof(h2),
-					    (caddr_t )&h2);
-					break;
-#endif /* INET */
-#ifdef INET6
-				case AF_INET6:
-					m_copyback(m, off,
-					    sizeof(struct icmp6_hdr),
-					    (caddr_t )&pd->hdr.icmp6);
-					m_copyback(m, ipoff2, sizeof(h2_6),
-					    (caddr_t )&h2_6);
-					break;
-#endif /* INET6 */
-				}
-				m_copyback(m, off2, sizeof(sh), (caddr_t)&sh);
-			}
-
-			return (PF_PASS);
-			break;
-		}
 		case IPPROTO_ICMP: {
 			struct icmp	*iih = &pd2.hdr.icmp;
 
@@ -7359,11 +7193,11 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 
 			icmpid = iih->icmp_id;
 			pf_icmp_mapping(&pd2, iih->icmp_type,
-			    &icmp_dir, &virtual_id, &virtual_type);
+			    &icmp_dir, &multi, &virtual_id, &virtual_type);
 
 			ret = pf_icmp_state_lookup(&key, &pd2, state, m, off,
 			    pd2.dir, kif, virtual_id, virtual_type,
-			    icmp_dir, &iidx, 0, 1);
+			    icmp_dir, &iidx, PF_ICMP_MULTI_NONE, 1);
 			if (ret >= 0) {
 				MPASS(*state == NULL);
 				return (ret);
@@ -7416,11 +7250,11 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 			}
 
 			pf_icmp_mapping(&pd2, iih->icmp6_type,
-			    &icmp_dir, &virtual_id, &virtual_type);
+			    &icmp_dir, &multi, &virtual_id, &virtual_type);
 
 			ret = pf_icmp_state_lookup(&key, &pd2, state, m, off,
 			    pd->dir, kif, virtual_id, virtual_type,
-			    icmp_dir, &iidx, 0, 1);
+			    icmp_dir, &iidx, PF_ICMP_MULTI_NONE, 1);
 			if (ret >= 0) {
 				MPASS(*state == NULL);
 				if (ret == PF_DROP && pd2.af == AF_INET6 &&
@@ -7428,7 +7262,7 @@ pf_test_state_icmp(struct pf_kstate **state, struct pfi_kkif *kif,
 					ret = pf_icmp_state_lookup(&key, &pd2,
 					    state, m, off, pd->dir, kif,
 					    virtual_id, virtual_type,
-					    icmp_dir, &iidx, 1, 1);
+					    icmp_dir, &iidx, multi, 1);
 					if (ret >= 0) {
 						MPASS(*state == NULL);
 						return (ret);

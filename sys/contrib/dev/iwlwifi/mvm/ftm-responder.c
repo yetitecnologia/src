@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
  * Copyright (C) 2015-2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2024 Intel Corporation
+ * Copyright (C) 2018-2022 Intel Corporation
  */
 #include <net/cfg80211.h>
 #include <linux/etherdevice.h>
@@ -12,9 +12,6 @@ struct iwl_mvm_pasn_sta {
 	struct list_head list;
 	struct iwl_mvm_int_sta int_sta;
 	u8 addr[ETH_ALEN];
-
-	/* must be last as it followed by buffer holding the key */
-	struct ieee80211_key_conf keyconf;
 };
 
 struct iwl_mvm_pasn_hltk_data {
@@ -42,7 +39,7 @@ static int iwl_mvm_ftm_responder_set_bw_v1(struct cfg80211_chan_def *chandef,
 		*ctrl_ch_position = iwl_mvm_get_ctrl_pos(chandef);
 		break;
 	default:
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 	}
 
 	return 0;
@@ -80,7 +77,7 @@ static int iwl_mvm_ftm_responder_set_bw_v2(struct cfg80211_chan_def *chandef,
 		}
 		fallthrough;
 	default:
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 	}
 
 	return 0;
@@ -88,7 +85,7 @@ static int iwl_mvm_ftm_responder_set_bw_v2(struct cfg80211_chan_def *chandef,
 
 static void
 iwl_mvm_ftm_responder_set_ndp(struct iwl_mvm *mvm,
-			      struct iwl_tof_responder_config_cmd *cmd)
+			      struct iwl_tof_responder_config_cmd_v9 *cmd)
 {
 	/* Up to 2 R2I STS are allowed on the responder */
 	u32 r2i_max_sts = IWL_MVM_FTM_R2I_MAX_STS < 2 ?
@@ -117,7 +114,7 @@ iwl_mvm_ftm_responder_cmd(struct iwl_mvm *mvm,
 	 * field interpretation is different), so the same struct can be use
 	 * for all cases.
 	 */
-	struct iwl_tof_responder_config_cmd cmd = {
+	struct iwl_tof_responder_config_cmd_v9 cmd = {
 		.channel_num = chandef->chan->hw_value,
 		.cmd_valid_fields =
 			cpu_to_le32(IWL_TOF_RESPONDER_CMD_VALID_CHAN_INFO |
@@ -131,13 +128,8 @@ iwl_mvm_ftm_responder_cmd(struct iwl_mvm *mvm,
 
 	lockdep_assert_held(&mvm->mutex);
 
-	if (cmd_ver == 10) {
-		cmd.band =
-			iwl_mvm_phy_band_from_nl80211(chandef->chan->band);
-	}
-
 	/* Use a default of bss_color=1 for now */
-	if (cmd_ver >= 9) {
+	if (cmd_ver == 9) {
 		cmd.cmd_valid_fields |=
 			cpu_to_le32(IWL_TOF_RESPONDER_CMD_VALID_BSS_COLOR |
 				    IWL_TOF_RESPONDER_CMD_VALID_MIN_MAX_TIME_BETWEEN_MSR);
@@ -153,7 +145,7 @@ iwl_mvm_ftm_responder_cmd(struct iwl_mvm *mvm,
 	}
 
 	if (cmd_ver >= 8)
-		iwl_mvm_ftm_responder_set_ndp(mvm, (void *)&cmd);
+		iwl_mvm_ftm_responder_set_ndp(mvm, &cmd);
 
 	if (cmd_ver >= 7)
 		err = iwl_mvm_ftm_responder_set_bw_v2(chandef, &cmd.format_bw,
@@ -299,7 +291,7 @@ iwl_mvm_ftm_responder_dyn_cfg_cmd(struct iwl_mvm *mvm,
 	default:
 		IWL_ERR(mvm, "Unsupported DYN_CONFIG_CMD version %u\n",
 			cmd_ver);
-		ret = -EOPNOTSUPP;
+		ret = -ENOTSUPP;
 	}
 
 	return ret;
@@ -310,16 +302,7 @@ static void iwl_mvm_resp_del_pasn_sta(struct iwl_mvm *mvm,
 				      struct iwl_mvm_pasn_sta *sta)
 {
 	list_del(&sta->list);
-
-	if (sta->keyconf.keylen)
-		iwl_mvm_sec_key_del_pasn(mvm, vif, BIT(sta->int_sta.sta_id),
-					 &sta->keyconf);
-
-	if (iwl_mvm_has_mld_api(mvm->fw))
-		iwl_mvm_mld_rm_sta_id(mvm, sta->int_sta.sta_id);
-	else
-		iwl_mvm_rm_sta_id(mvm, vif, sta->int_sta.sta_id);
-
+	iwl_mvm_rm_sta_id(mvm, vif, sta->int_sta.sta_id);
 	iwl_mvm_dealloc_int_sta(mvm, &sta->int_sta);
 	kfree(sta);
 }
@@ -346,7 +329,7 @@ int iwl_mvm_ftm_respoder_add_pasn_sta(struct iwl_mvm *mvm,
 
 	if (cmd_ver < 3) {
 		IWL_ERR(mvm, "Adding PASN station not supported by FW\n");
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 	}
 
 	if ((!hltk || !hltk_len) && (!tk || !tk_len)) {
@@ -355,12 +338,6 @@ int iwl_mvm_ftm_respoder_add_pasn_sta(struct iwl_mvm *mvm,
 	}
 
 	if (hltk && hltk_len) {
-		if (!fw_has_capa(&mvm->fw->ucode_capa,
-				 IWL_UCODE_TLV_CAPA_SECURE_LTF_SUPPORT)) {
-			IWL_ERR(mvm, "No support for secure LTF measurement\n");
-			return -EINVAL;
-		}
-
 		hltk_data.cipher = iwl_mvm_cipher_to_location_cipher(cipher);
 		if (hltk_data.cipher == IWL_LOCATION_CIPHER_INVALID) {
 			IWL_ERR(mvm, "invalid cipher: %u\n", cipher);
@@ -371,12 +348,12 @@ int iwl_mvm_ftm_respoder_add_pasn_sta(struct iwl_mvm *mvm,
 	}
 
 	if (tk && tk_len) {
-		sta = kzalloc(sizeof(*sta) + tk_len, GFP_KERNEL);
+		sta = kzalloc(sizeof(*sta), GFP_KERNEL);
 		if (!sta)
 			return -ENOBUFS;
 
 		ret = iwl_mvm_add_pasn_sta(mvm, vif, &sta->int_sta, addr,
-					   cipher, tk, tk_len, &sta->keyconf);
+					   cipher, tk, tk_len);
 		if (ret) {
 			kfree(sta);
 			return ret;
@@ -445,7 +422,7 @@ int iwl_mvm_ftm_start_responder(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 	rcu_read_unlock();
 
 	phy_ctxt = &mvm->phy_ctxts[*phy_ctxt_id];
-	ret = iwl_mvm_phy_ctxt_changed(mvm, phy_ctxt, &ctx.def, &ctx.ap,
+	ret = iwl_mvm_phy_ctxt_changed(mvm, phy_ctxt, &ctx.def,
 				       ctx.rx_chains_static,
 				       ctx.rx_chains_dynamic);
 	if (ret)

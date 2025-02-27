@@ -316,12 +316,22 @@ static ssize_t rtw_debugfs_set_single_input(struct file *filp,
 {
 	struct seq_file *seqpriv = (struct seq_file *)filp->private_data;
 	struct rtw_debugfs_priv *debugfs_priv = seqpriv->private;
+	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+	char tmp[32 + 1];
 	u32 input;
+	int num;
 	int ret;
 
-	ret = kstrtou32_from_user(buffer, count, 0, &input);
+	ret = rtw_debugfs_copy_from_user(tmp, sizeof(tmp), buffer, count, 1);
 	if (ret)
 		return ret;
+
+	num = kstrtoint(tmp, 0, &input);
+
+	if (num) {
+		rtw_warn(rtwdev, "kstrtoint failed\n");
+		return num;
+	}
 
 	debugfs_priv->cb_data = input;
 
@@ -475,11 +485,18 @@ static ssize_t rtw_debugfs_set_fix_rate(struct file *filp,
 	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
 	u8 fix_rate;
+	char tmp[32 + 1];
 	int ret;
 
-	ret = kstrtou8_from_user(buffer, count, 0, &fix_rate);
+	ret = rtw_debugfs_copy_from_user(tmp, sizeof(tmp), buffer, count, 1);
 	if (ret)
 		return ret;
+
+	ret = kstrtou8(tmp, 0, &fix_rate);
+	if (ret) {
+		rtw_warn(rtwdev, "invalid args, [rate]\n");
+		return ret;
+	}
 
 	dm_info->fix_rate = fix_rate;
 
@@ -862,12 +879,19 @@ static ssize_t rtw_debugfs_set_coex_enable(struct file *filp,
 	struct rtw_debugfs_priv *debugfs_priv = seqpriv->private;
 	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
 	struct rtw_coex *coex = &rtwdev->coex;
+	char tmp[32 + 1];
 	bool enable;
 	int ret;
 
-	ret = kstrtobool_from_user(buffer, count, &enable);
+	ret = rtw_debugfs_copy_from_user(tmp, sizeof(tmp), buffer, count, 1);
 	if (ret)
 		return ret;
+
+	ret = kstrtobool(tmp, &enable);
+	if (ret) {
+		rtw_warn(rtwdev, "invalid arguments\n");
+		return ret;
+	}
 
 	mutex_lock(&rtwdev->mutex);
 	coex->manual_control = !enable;
@@ -927,12 +951,17 @@ static ssize_t rtw_debugfs_set_fw_crash(struct file *filp,
 	struct seq_file *seqpriv = (struct seq_file *)filp->private_data;
 	struct rtw_debugfs_priv *debugfs_priv = seqpriv->private;
 	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+	char tmp[32 + 1];
 	bool input;
 	int ret;
 
-	ret = kstrtobool_from_user(buffer, count, &input);
+	ret = rtw_debugfs_copy_from_user(tmp, sizeof(tmp), buffer, count, 1);
 	if (ret)
 		return ret;
+
+	ret = kstrtobool(tmp, &input);
+	if (ret)
+		return -EINVAL;
 
 	if (!input)
 		return -EINVAL;
@@ -1001,12 +1030,11 @@ static ssize_t rtw_debugfs_set_dm_cap(struct file *filp,
 	struct rtw_debugfs_priv *debugfs_priv = seqpriv->private;
 	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
-	int ret, bit;
+	int bit;
 	bool en;
 
-	ret = kstrtoint_from_user(buffer, count, 10, &bit);
-	if (ret)
-		return ret;
+	if (kstrtoint_from_user(buffer, count, 10, &bit))
+		return -EINVAL;
 
 	en = bit > 0;
 	bit = abs(bit);
@@ -1205,9 +1233,9 @@ static struct rtw_debugfs_priv rtw_debug_priv_dm_cap = {
 #define rtw_debugfs_add_core(name, mode, fopname, parent)		\
 	do {								\
 		rtw_debug_priv_ ##name.rtwdev = rtwdev;			\
-		if (IS_ERR(debugfs_create_file(#name, mode,		\
+		if (!debugfs_create_file(#name, mode,			\
 					 parent, &rtw_debug_priv_ ##name,\
-					 &file_ops_ ##fopname)))	\
+					 &file_ops_ ##fopname))		\
 			pr_debug("Unable to initialize debugfs:%s\n",	\
 			       #name);					\
 	} while (0)
@@ -1223,11 +1251,7 @@ void rtw_debugfs_init(struct rtw_dev *rtwdev)
 {
 	struct dentry *debugfs_topdir;
 
-#if defined(__linux__)
 	debugfs_topdir = debugfs_create_dir("rtw88",
-#elif defined(__FreeBSD__)
-	debugfs_topdir = debugfs_create_dir(dev_name(rtwdev->dev),
-#endif
 					    rtwdev->hw->wiphy->debugfsdir);
 	rtw_debugfs_add_w(write_reg);
 	rtw_debugfs_add_rw(read_reg);
@@ -1290,8 +1314,8 @@ void rtw_debugfs_init(struct rtw_dev *rtwdev)
 
 #ifdef CONFIG_RTW88_DEBUG
 
-void rtw_dbg(struct rtw_dev *rtwdev, enum rtw_debug_mask mask,
-	     const char *fmt, ...)
+void __rtw_dbg(struct rtw_dev *rtwdev, enum rtw_debug_mask mask,
+	       const char *fmt, ...)
 {
 	struct va_format vaf = {
 		.fmt = fmt,
@@ -1310,6 +1334,6 @@ void rtw_dbg(struct rtw_dev *rtwdev, enum rtw_debug_mask mask,
 
 	va_end(args);
 }
-EXPORT_SYMBOL(rtw_dbg);
+EXPORT_SYMBOL(__rtw_dbg);
 
 #endif /* CONFIG_RTW88_DEBUG */

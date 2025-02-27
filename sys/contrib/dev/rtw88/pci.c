@@ -780,8 +780,7 @@ static void __pci_flush_queue(struct rtw_dev *rtwdev, u8 pci_q, bool drop)
 	}
 
 	if (!drop)
-		rtw_dbg(rtwdev, RTW_DBG_UNEXP,
-			"timed out to flush pci tx ring[%d]\n", pci_q);
+		rtw_warn(rtwdev, "timed out to flush pci tx ring[%d]\n", pci_q);
 }
 
 static void __rtw_pci_flush_queues(struct rtw_dev *rtwdev, u32 pci_queues,
@@ -1530,7 +1529,6 @@ static void rtw_pci_phy_cfg(struct rtw_dev *rtwdev)
 {
 	struct rtw_pci *rtwpci = (struct rtw_pci *)rtwdev->priv;
 	const struct rtw_chip_info *chip = rtwdev->chip;
-	struct rtw_efuse *efuse = &rtwdev->efuse;
 	struct pci_dev *pdev = rtwpci->pdev;
 	const struct rtw_intf_phy_para *para;
 	u16 cut;
@@ -1579,9 +1577,6 @@ static void rtw_pci_phy_cfg(struct rtw_dev *rtwdev)
 			rtw_err(rtwdev, "failed to set PCI cap, ret = %d\n",
 				ret);
 	}
-
-	if (chip->id == RTW_CHIP_TYPE_8822C && efuse->rfe_option == 5)
-		rtw_write32_mask(rtwdev, REG_ANAPARSW_MAC_0, BIT_CF_L_V2, 0x1);
 }
 
 static int __maybe_unused rtw_pci_suspend(struct device *dev)
@@ -1692,7 +1687,7 @@ static struct rtw_hci_ops rtw_pci_ops = {
 
 static int rtw_pci_request_irq(struct rtw_dev *rtwdev, struct pci_dev *pdev)
 {
-	unsigned int flags = PCI_IRQ_INTX;
+	unsigned int flags = PCI_IRQ_LEGACY;
 	int ret;
 
 	if (!rtw_disable_msi)
@@ -1761,16 +1756,12 @@ static int rtw_pci_napi_poll(struct napi_struct *napi, int budget)
 	return work_done;
 }
 
-static int rtw_pci_napi_init(struct rtw_dev *rtwdev)
+static void rtw_pci_napi_init(struct rtw_dev *rtwdev)
 {
 	struct rtw_pci *rtwpci = (struct rtw_pci *)rtwdev->priv;
 
-	rtwpci->netdev = alloc_netdev_dummy(0);
-	if (!rtwpci->netdev)
-		return -ENOMEM;
-
-	netif_napi_add(rtwpci->netdev, &rtwpci->napi, rtw_pci_napi_poll);
-	return 0;
+	init_dummy_netdev(&rtwpci->netdev);
+	netif_napi_add(&rtwpci->netdev, &rtwpci->napi, rtw_pci_napi_poll);
 }
 
 static void rtw_pci_napi_deinit(struct rtw_dev *rtwdev)
@@ -1779,7 +1770,6 @@ static void rtw_pci_napi_deinit(struct rtw_dev *rtwdev)
 
 	rtw_pci_napi_stop(rtwdev);
 	netif_napi_del(&rtwpci->napi);
-	free_netdev(rtwpci->netdev);
 }
 
 int rtw_pci_probe(struct pci_dev *pdev,
@@ -1829,11 +1819,7 @@ int rtw_pci_probe(struct pci_dev *pdev,
 		goto err_pci_declaim;
 	}
 
-	ret = rtw_pci_napi_init(rtwdev);
-	if (ret) {
-		rtw_err(rtwdev, "failed to setup NAPI\n");
-		goto err_pci_declaim;
-	}
+	rtw_pci_napi_init(rtwdev);
 
 	ret = rtw_chip_info_setup(rtwdev);
 	if (ret) {
@@ -1921,7 +1907,7 @@ void rtw_pci_shutdown(struct pci_dev *pdev)
 EXPORT_SYMBOL(rtw_pci_shutdown);
 
 MODULE_AUTHOR("Realtek Corporation");
-MODULE_DESCRIPTION("Realtek PCI 802.11ac wireless driver");
+MODULE_DESCRIPTION("Realtek 802.11ac wireless PCI driver");
 MODULE_LICENSE("Dual BSD/GPL");
 #if defined(__FreeBSD__)
 MODULE_VERSION(rtw_pci, 1);
