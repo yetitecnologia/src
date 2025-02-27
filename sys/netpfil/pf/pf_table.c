@@ -548,6 +548,8 @@ pfr_get_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int *size,
 	struct pfr_ktable	*kt;
 	struct pfr_walktree	 w;
 	int			 rv;
+	int			 old, new;
+	volatile int		*ptr;
 
 	PF_RULES_WASSERT();
 
@@ -562,10 +564,15 @@ pfr_get_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int *size,
 		return (0);
 	}
 
+	ptr = &kt->pfrkt_cnt;
+
 	bzero(&w, sizeof(w));
 	w.pfrw_op = PFRW_GET_ADDRS;
 	w.pfrw_addr = addr;
-	w.pfrw_free = kt->pfrkt_cnt;
+	w.pfrw_free = *ptr;
+
+	old = w.pfrw_free;
+
 	rv = kt->pfrkt_ip4->rnh_walktree(&kt->pfrkt_ip4->rh, pfr_walktree, &w);
 	if (!rv)
 		rv = kt->pfrkt_ip6->rnh_walktree(&kt->pfrkt_ip6->rh,
@@ -573,8 +580,17 @@ pfr_get_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int *size,
 	if (rv)
 		return (rv);
 
-	KASSERT(w.pfrw_free == 0, ("%s: corruption detected (%d)", __func__,
-	    w.pfrw_free));
+	new = *ptr;
+	if (old != new) {
+		printf("pfr_get_addrs: corruption detected (was: %d, is: %d).\n",
+		    old, new);
+	}
+
+	if (w.pfrw_free) {
+		printf("pfr_get_addrs: corruption detected (%d).\n",
+		    w.pfrw_free);
+		return (ENOTTY);
+	}
 
 	*size = kt->pfrkt_cnt;
 	return (0);
